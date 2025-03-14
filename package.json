@@ -8,7 +8,15 @@
     "lib",
     "dist"
   ],
+  "contributors": [
+    "小舍 <DMB-codegang@users.noreply.github.com>"
+  ],
   "license": "GPL-3.0-only",
+  "homepage": "https://github.com/DMB-codegang/koishi-plugin-codegang-jf",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DMB-codegang/koishi-plugin-codegang-jf.git"
+  },
   "scripts": {},
   "keywords": [
     "chatbot",
