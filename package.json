@@ -1,6 +1,6 @@
 {
   "name": "koishi-plugin-codegang-jf",
-  "description": "一个基本的积分插件",
+  "description": "专业积分管理插件",
   "version": "0.0.1",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
@@ -8,7 +8,7 @@
     "lib",
     "dist"
   ],
-  "license": "MIT",
+  "license": "GPL-3.0-only",
   "scripts": {},
   "keywords": [
     "chatbot",
@@ -18,5 +18,15 @@
   "devDependencies": {},
   "peerDependencies": {
     "koishi": "^4.18.3"
+  },
+  "koishi": {
+    "description": {
+      "zh": "专业积分管理插件"
+    },
+    "service": {
+      "required": ["database"],
+      "implements": ["jf"]
+    },
+    "preview": true
   }
 }
