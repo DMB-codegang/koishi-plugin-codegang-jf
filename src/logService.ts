@@ -1,126 +1,209 @@
 import { Context, Logger, $ } from 'koishi'
+import { Config } from './config'
+export * from './config'
 
 const database_name_log = 'codegang_jf_log';
 
 export class LogService {
-    private ctx: Context
-    private log: Logger
-  
-    constructor(ctx: Context) {
-      this.ctx = ctx
-      this.log = new Logger("@codegang/codegang-jf");
-      ctx.model.extend(database_name_log, {
-        id: 'unsigned',
-        userid: 'string',
-        operationType: 'string',
-        operationNum: 'integer',
-        plugin: 'string',
-        comment: 'string',
-        success: 'boolean',
-        time: 'timestamp'
-      }, { primary: 'id' })
-    }
+  private ctx: Context
+  private cfg: Config
+  private log: Logger
 
-    async writelog(logData: {
-        userid: string
-        operationType: string
-        operationNum?: number
-        comment?: string
-        success: boolean
-        plugin?: string
-      }) {
-        // 如果日志功能未启用，直接返回
-        if (!this.ctx.config.log) return
-        logData.plugin ??= 'unknown'
-        logData.operationNum ??= null
-    
-        // 检查日志类型是否在允许列表中
-        const typeAllowed = this.ctx.config.log_type.includes(logData.operationType)
-        // 
-        const successFilter = this.ctx.config.only_success_false ? !logData.success : true
-        // 如果日志类型不允许或不满足成功状态过滤条件，则不记录
-        if (!typeAllowed || !successFilter) return
-        try {
-          const existingIds = (await this.ctx.database.select(database_name_log)
-            .orderBy('id', 'asc')
-            .execute(row => $.array(row.id))).map(Number)
-          let gap = 0;
-          for (const id of existingIds) {
-            if (id > gap) break;  // 发现间隙，直接退出
-            gap = id + 1;          // 连续时更新 gap
-          }
-          const datacount: number = (await this.ctx.database.stats()).tables[database_name_log].count // 获取日志数量
-          if (datacount === 0) {
-            await this.ctx.database.create(database_name_log, {
-              userid: logData.userid,
-              operationType: logData.operationType,
-              operationNum: logData.operationNum,
-              plugin: logData.plugin,
-              success: logData.success,
-              time: new Date()
-            })
-            return
-          }
-          const maxId: number = (await this.ctx.database.select(database_name_log).orderBy('id', 'desc').limit(1).execute())[0].id
-          const newestId: number = (await this.ctx.database.select(database_name_log).orderBy('time', 'desc').limit(1).execute())[0].id
-          const oldestId: number = (await this.ctx.database.select(database_name_log).orderBy('time', 'asc').limit(1).execute())[0].id
-          switch (true) {
-            case datacount < this.ctx.config.max_log:
-              // 如果日志数量为0或小于配置项的最大值，说明分配的空间还未填满，则直接创建新日志
-              this.ctx.database.create(database_name_log, {
-                userid: logData.userid,
-                operationType: logData.operationType,
-                operationNum: logData.operationNum,
-                plugin: logData.plugin,
-                success: logData.success,
-                time: new Date()
-              })
-              break;
-            case newestId >= this.ctx.config.max_log || maxId >= this.ctx.config.max_log:
-              // 如果最新的日志ID大于等于配置项的最大值，或者最大ID大于等于配置项的最大值，则说明分配的空间已满，需要进行循环
-              if (gap <= this.ctx.config.max_log) {// 有空id位优先使用空id位
-                this.ctx.database.upsert(database_name_log, [
-                  {
-                    id: gap,
-                    userid: logData.userid,
-                    operationType: logData.operationType,
-                    operationNum: logData.operationNum,
-                    plugin: logData.plugin,
-                    success: logData.success,
-                    time: new Date()
-                  }
-                ])
-              } else {
-                this.ctx.database.upsert(database_name_log, [
-                  {
-                    id: oldestId,
-                    userid: logData.userid,
-                    operationType: logData.operationType,
-                    operationNum: logData.operationNum,
-                    plugin: logData.plugin,
-                    success: logData.success,
-                    time: new Date()
-                  }
-                ])
-              }
-              if (datacount > this.ctx.config.max_log) {
-                // 通过配置文件的最大日志数和数据库中的日志数，计算出需要删除的日志数量
-                const deleteCount = datacount - this.ctx.config.max_log
-                const row = await this.ctx.database.get(database_name_log, {}, {
-                  fields: ['id', 'time'],
-                  sort: { time: 'asc' },
-                  limit: deleteCount
-                });
-                // 删除多余的日志
-                this.ctx.database.remove(database_name_log, {
-                  id: row.map(item => item.id)
-                })
-              }
-              break;
-          }
-        } catch (error) {
-          // 记录日志失败时，输出错误信息
-          this.log.error('写入日志失败：' + error.message)
-        }
+  constructor(ctx: Context, cfg: Config) {
+    this.ctx = ctx
+    this.cfg = cfg
+    this.log = new Logger("@codegang/codegang-jf");
+    ctx.model.extend(database_name_log, {
+      id: 'unsigned',
+      userid: 'string',
+      operationType: 'string',
+      newValue: 'integer',
+      plugin: 'string',
+      comment: 'string',
+      statusCode: 'integer',
+      time: 'timestamp',
+      oldValue: 'integer',
+      transactionId: 'string'
+    }, { primary: 'id' })
+  }
+  private shouldSkipLog(logData: { operationType: string; statusCode: number }): boolean {
+    return !this.checkTypeAllowed(logData.operationType) || !this.checkSuccessFilter(logData.statusCode);
+  }
+
+  private checkTypeAllowed(operationType: string): boolean {
+    return this.cfg.log_type.includes(operationType);
+  }
+
+  private checkSuccessFilter(statusCode: number): boolean {
+    return this.cfg.only_success_false
+      ? !(statusCode >= 200 && statusCode < 300)  // 取反判断条件
+      : true;
+  }
+
+  private createLogData(id: number | null, logData: any) {
+    return {
+      id,
+      userid: logData.userid,
+      operationType: logData.operationType,
+      newValue: logData.newValue,
+      plugin: logData.plugin,
+      statusCode: logData.statusCode,
+      comment: logData.comment,
+      oldValue: logData.oldValue ?? 0,
+      transactionId: logData.transactionId,
+      time: new Date()
+    };
+  }
+
+  private async findGapId(): Promise<number> {
+    const existingIds = (await this.ctx.database.select(database_name_log)
+      .orderBy('id', 'asc')
+      .execute(row => $.array(row.id))).map(Number);
+
+    let gap = 0;
+    for (const id of existingIds) {
+      if (id > gap) break;
+      gap = id + 1;
+    }
+    return gap;
+  }
+
+  /**
+   * 写入日志记录（主入口方法）
+   * @param logData 日志数据对象，包含以下字段：
+   *  - userid: 用户标识符
+   *  - operationType: 操作类型
+   *  - newValue: 新数值（可选）
+   *  - oldValue: 旧数值（可选）
+   *  - comment: 附加说明（可选）
+   *  - statusCode: 操作状态码（必填）
+   *  - plugin: 来源插件名称（可选，默认'unknown'）
+   * 
+   * 方法逻辑：
+   * 1. 检查日志功能是否启用
+   * 2. 设置默认值并应用过滤规则
+   * 3. 处理空数据库初始化场景
+   * 4. 根据当前记录数选择插入策略：
+   *    - 未达上限：直接创建新记录
+   *    - 超过上限：复用ID间隙或覆盖最旧记录
+   * 5. 自动清理超出max_log配置的旧记录
+   * 
+   * @throws 操作失败时记录错误信息到Logger
+   */
+  async writelog(logData: {
+    userid: string
+    operationType: string
+    newValue?: number
+    comment?: string
+    statusCode: number
+    plugin?: string
+    oldValue?: number
+    transactionId?: string
+  }) {
+    if (!this.cfg.log_enabled) return;
+    logData.plugin ??= 'unknown';
+    logData.newValue ??= 0;
+    logData.comment??= '';
+
+    if (this.shouldSkipLog(logData)) return;
+
+    try {
+      const gap = await this.findGapId();
+      const datacount = await this.getLogCount();
+
+      if (datacount === 0) {
+        await this.createInitialLog(logData);
+        return;
       }
+
+      const [maxId, newestId, oldestId] = await Promise.all([
+        this.getMaxId(),
+        this.getNewestId(),
+        this.getOldestId()
+      ]);
+
+      datacount < this.cfg.max_log
+        ? await this.handleUnderMax(logData)
+        : await this.handleOverMax(logData, gap, oldestId, datacount);
+    } catch (error) {
+      this.log.error(`写入日志失败：${error.message}`);
+    }
+  }
+
+  private async getLogCount(): Promise<number> {
+    return (await this.ctx.database.stats()).tables[database_name_log].count;
+  }
+
+  /**
+   * 创建初始日志记录（当数据库为空时调用）
+   * @param logData 要记录的初始日志数据
+   */
+  private async createInitialLog(logData: any) {
+    await this.ctx.database.create(database_name_log,
+      this.createLogData(null, logData));
+  }
+
+  /**
+   * 处理未超过最大记录数的情况
+   * @param logData 要记录的日志数据
+   */
+  private async handleUnderMax(logData: any) {
+    await this.ctx.database.create(database_name_log,
+      this.createLogData(null, logData));
+  }
+
+  /**
+   * 处理超过最大记录数的情况
+   * @param logData 要记录的日志数据
+   * @param gap 找到的ID间隙
+   * @param oldestId 最旧记录的ID
+   * @param datacount 当前总记录数
+   */
+  private async handleOverMax(logData: any, gap: number, oldestId: number, datacount: number) {
+    const useGap = gap <= this.cfg.max_log;
+    await this.ctx.database.upsert(database_name_log, [
+      this.createLogData(useGap ? gap : oldestId, logData)
+    ]);
+
+    if (datacount > this.cfg.max_log) {
+      await this.cleanupOldLogs(datacount);
+    }
+  }
+
+  /**
+   * 清理过期日志记录
+   * @param datacount 当前总记录数
+   */
+  private async cleanupOldLogs(datacount: number) {
+    const deleteCount = datacount - this.cfg.max_log;
+    const rows = await this.ctx.database.get(database_name_log, {}, {
+      fields: ['id'],
+      sort: { time: 'asc' },
+      limit: deleteCount
+    });
+    await this.ctx.database.remove(database_name_log, {
+      id: rows.map(row => row.id)
+    });
+  }
+
+  // 获取最大ID值
+  private async getMaxId(): Promise<number> {
+    const results = await this.ctx.database.select(database_name_log)
+      .orderBy('id', 'desc').limit(1).execute()
+    return results[0]?.id ?? 0
+  }
+
+  // 获取最新记录的ID
+  private async getNewestId(): Promise<number> {
+    const results = await this.ctx.database.select(database_name_log)
+      .orderBy('time', 'desc').limit(1).execute()
+    return results[0]?.id ?? 0
+  }
+
+  // 获取最旧记录的ID
+  private async getOldestId(): Promise<number> {
+    const results = await this.ctx.database.select(database_name_log)
+      .orderBy('time', 'asc').limit(1).execute()
+    return results[0]?.id ?? 0
+  }
 }
